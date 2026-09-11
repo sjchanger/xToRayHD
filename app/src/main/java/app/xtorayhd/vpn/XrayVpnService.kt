@@ -6,79 +6,86 @@ import android.app.NotificationManager
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
-import android.os.IBinder
 import android.os.ParcelFileDescriptor
-import androidx.core.app.NotificationCompat
 import app.xtorayhd.R
-import app.xtorayhd.core.ConfigBuilder
-import app.xtorayhd.core.ProxyProfile
-import app.xtorayhd.core.XrayEngine
 
 class XrayVpnService : VpnService() {
+    private var vpnInterface: ParcelFileDescriptor? = null
+
     companion object {
-        const val ACTION_START = "app.xtorayhd.START"
-        const val ACTION_STOP = "app.xtorayhd.STOP"
-        const val EXTRA_CONFIG = "config"
+        private const val CHANNEL_ID = "xtorayhd_vpn"
+        private const val NOTIFICATION_ID = 1001
     }
 
-    private var vpn: ParcelFileDescriptor? = null
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+        startForeground(NOTIFICATION_ID, createNotification())
+    }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> startTunnel(intent.getStringExtra(EXTRA_CONFIG) ?: return START_NOT_STICKY)
-            ACTION_STOP -> stopTunnel()
-        }
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int
+    ): Int {
+        establishVpn()
         return START_STICKY
     }
 
-    private fun startTunnel(config: String) {
-        createChannel()
-        startForeground(7, notification("Connecting…"))
-        stopTunnel(false)
-        val prepared = prepare(this)
-        if (prepared != null) return
-        vpn = Builder()
+    private fun establishVpn() {
+        if (vpnInterface != null) return
+
+        vpnInterface = Builder()
             .setSession("xToRayHD")
             .setMtu(1500)
-            .addAddress("10.0.0.2", 16)
-            .addAddress("fd00::2", 64)
+            .addAddress("10.0.0.2", 32)
             .addRoute("0.0.0.0", 0)
-            .addRoute("::", 0)
             .addDnsServer("1.1.1.1")
             .addDnsServer("8.8.8.8")
-            .addDisallowedApplication(packageName)
             .establish()
-        val fd = vpn?.fd ?: return stopTunnel()
-        XrayEngine.start(config, fd).onFailure { stopTunnel() }
-    }
-
-    private fun stopTunnel(notify: Boolean = true) {
-        XrayEngine.stop()
-        vpn?.close()
-        vpn = null
-        if (notify) stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     override fun onDestroy() {
-        stopTunnel()
+        vpnInterface?.close()
+        vpnInterface = null
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
+    override fun onRevoke() {
+        vpnInterface?.close()
+        vpnInterface = null
+        stopSelf()
+        super.onRevoke()
+    }
 
-    private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= 26) {
-            getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel("vpn","xToRayHD",NotificationManager.IMPORTANCE_LOW)
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java)
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "xToRayHD VPN",
+                NotificationManager.IMPORTANCE_LOW
             )
+            channel.description = "xToRayHD VPN connection"
+            manager.createNotificationChannel(channel)
         }
     }
 
-    private fun notification(text: String): Notification =
-        NotificationCompat.Builder(this,"vpn")
-            .setSmallIcon(android.R.drawable.stat_sys_warning)
-            .setContentTitle("xToRayHD")
-            .setContentText(text)
-            .setOngoing(true)
-            .build()
+    private fun createNotification(): Notification {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("xToRayHD")
+                .setContentText("VPN connection active")
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setOngoing(true)
+                .build()
+        } else {
+            Notification.Builder(this)
+                .setContentTitle("xToRayHD")
+                .setContentText("VPN connection active")
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setOngoing(true)
+                .build()
+        }
+    }
 }
