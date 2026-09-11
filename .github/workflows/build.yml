@@ -1,1 +1,42 @@
+name: Build xToRayHD APK
 
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout matching Xray Android library
+        run: |
+          git clone --recurse-submodules --depth 1 https://github.com/2dust/v2rayNG.git /tmp/v2rayNG
+          cd /tmp/v2rayNG/AndroidLibXrayLite
+          TAG=$(git describe --tags --abbrev=0)
+          echo "XRAYLIB_TAG=$TAG" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/app/libs"
+          curl -fL "https://github.com/2dust/AndroidLibXrayLite/releases/download/${TAG}/libv2ray.aar" -o "$GITHUB_WORKSPACE/app/libs/libv2ray.aar"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Build debug APK
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: xToRayHD-debug
+          path: app/build/outputs/apk/debug/*.apk
