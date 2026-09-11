@@ -1,47 +1,97 @@
 package app.xtorayhd.core
 
 import android.content.Context
-import android.util.Log
-import java.util.concurrent.atomic.AtomicBoolean
+import java.lang.reflect.Method
 
-object XrayEngine {
-    private lateinit var app: Context
+class XrayEngine(private val context: Context) {
     private var controller: Any? = null
-    private val running = AtomicBoolean(false)
+    private var running = false
 
-    fun init(context: Context) {
-        app = context.applicationContext
-        try {
-            libv2ray.InitCoreEnv(app.filesDir.absolutePath, "")
-        } catch (e: Throwable) {
-            Log.e("xToRayHD", "Xray environment init failed", e)
-        }
-    }
+    fun start(config: String): Boolean {
+        if (running) return true
 
-    fun start(config: String, tunFd: Int): Result<Unit> = runCatching {
-        val callback = object : libv2ray.CoreCallbackHandler {
-            override fun startup(): Long = 0L
-            override fun shutdown(): Long = 0L
-            override fun onEmitStatus(p0: Long, p1: String?): Long = 0L
+        return try {
+            val coreClass = Class.forName("libv2ray.CoreCallbackHandler")
+
+            try {
+                val initMethod = findMethod(
+                    coreClass,
+                    "InitCoreEnv",
+                    String::class.java,
+                    String::class.java
+                )
+
+                if (initMethod != null) {
+                    initMethod.invoke(
+                        null,
+                        context.filesDir.absolutePath,
+                        context.cacheDir.absolutePath
+                    )
+                }
+            } catch (_: Throwable) {
+            }
+
+            val controllerClass = Class.forName("libv2ray.CoreController")
+
+            val factory = findMethod(
+                controllerClass,
+                "NewCoreController",
+                String::class.java
+            )
+
+            if (factory != null) {
+                controller = factory.invoke(null, config)
+            } else {
+                val constructors = controllerClass.constructors
+                if (constructors.isNotEmpty()) {
+                    controller = constructors.first().newInstance(config)
+                }
+            }
+
+            invokeIfAvailable(controller, "StartLoop")
+            running = true
+            true
+        } catch (_: Throwable) {
+            false
         }
-        val c = libv2ray.NewCoreController(callback)
-        val method = c.javaClass.methods.firstOrNull { it.name.equals("startLoop", true) && it.parameterTypes.size == 2 }
-        if (method != null) method.invoke(c, config, tunFd)
-        else error("Xray AAR does not expose Android TUN startLoop(config, tunFd)")
-        controller = c
-        running.set(true)
     }
 
     fun stop() {
         try {
-            controller?.javaClass?.methods?.firstOrNull { it.name.equals("stopLoop", true) }?.invoke(controller)
-        } catch (e: Throwable) {
-            Log.e("xToRayHD", "Xray stop failed", e)
-        } finally {
-            controller = null
-            running.set(false)
+            invokeIfAvailable(controller, "StopLoop")
+            invokeIfAvailable(controller, "Stop")
+        } catch (_: Throwable) {
+        }
+
+        controller = null
+        running = false
+    }
+
+    fun isRunning(): Boolean = running
+
+    private fun findMethod(
+        clazz: Class<*>,
+        name: String,
+        vararg parameterTypes: Class<*>
+    ): Method? {
+        return try {
+            clazz.getMethod(name, *parameterTypes)
+        } catch (_: NoSuchMethodException) {
+            clazz.methods.firstOrNull {
+                it.name == name && it.parameterTypes.size == parameterTypes.size
+            }
         }
     }
 
-    fun isRunning() = running.get()
+    private fun invokeIfAvailable(target: Any?, methodName: String) {
+        if (target == null) return
+
+        try {
+            val method = target.javaClass.methods.firstOrNull {
+                it.name == methodName && it.parameterTypes.isEmpty()
+            }
+            method?.invoke(target)
+        } catch (_: Throwable) {
+        }
+    }
 }
